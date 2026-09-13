@@ -1,4 +1,4 @@
-# FL-ESPORTS MK870 Keyboard Driver (Rust Rewrite)
+# debloatedfl-driver (FL-ESPORTS MK870 Rust Driver)
 
 A clean, high-performance, 100% offline, bloatware-free driver and control suite for the **FL-ESPORTS MK870** mechanical keyboard.
 

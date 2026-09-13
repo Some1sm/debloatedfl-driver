@@ -1,16 +1,16 @@
-# ⌨️ FL-Driver (MK870 Rust Driver)
+# ⌨️ debloatedfl-driver (MK870 Rust Driver)
 
 [![Language: Rust](https://img.shields.io/badge/Language-Rust-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg?logo=windows)](https://www.microsoft.com/windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Privacy: 100% Offline](https://img.shields.io/badge/Privacy-100%25%20Offline-success.svg)](#-why-fl-driver-the-clean-alternative)
+[![Privacy: 100% Offline](https://img.shields.io/badge/Privacy-100%25%20Offline-success.svg)](#-why-debloatedfl-driver-the-clean-alternative)
 [![Release: 1.0.0](https://img.shields.io/badge/Release-1.0.0-blueviolet.svg)](https://github.com/Some1sm/debloatedfl-driver/releases)
 
 A clean, high-performance, 100% offline, privacy-first driver and control suite for the **FL-ESPORTS MK870** (and compatible Royuan/YC500-based) mechanical keyboards, built natively in Rust.
 
 ---
 
-## 🛡️ Why FL-Driver? (The Clean Alternative)
+## 🛡️ Why debloatedfl-driver? (The Clean Alternative)
 
 The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web application bundled with invasive telemetry and bloat:
 * **Motherboard & CPU Fingerprinting**: Bundles `node-machine-id` to extract unique hardware GUIDs.
@@ -19,7 +19,7 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
 * **Resource Waste**: Spawns multiple Chromium processes consuming **200 MB to 400 MB of RAM** and over **250 MB of disk space**.
 
 ### The Rust Solution:
-| Feature / Metric | Official Vendor Software | **FL-Driver (Rust)** |
+| Feature / Metric | Official Vendor Software | **debloatedfl-driver** |
 | :--- | :---: | :---: |
 | **Download / Executable Size** | ~80 MB installer | **~5.4 MB** (Single portable executable) |
 | **Installed Disk Space** | ~250 MB | **0 MB** (No installation needed) |
@@ -70,7 +70,7 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
 
 ## 💻 Command Line Interface (CLI)
 
-`fl-driver-rs` is a dual-mode binary. Run it with no arguments to open the GUI, or use CLI subcommands in terminal/PowerShell scripts:
+`debloatedfl-driver` (`fl-driver-rs.exe`) is a dual-mode binary. Run it with no arguments to open the GUI, or use CLI subcommands in terminal/PowerShell scripts:
 
 ### Device Information & Battery
 ```powershell
