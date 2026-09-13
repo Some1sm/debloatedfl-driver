@@ -1,0 +1,22 @@
+﻿# Rust build outputs
+target/
+**/target/
+
+# Reverse engineering archives and unpacked vendor assets
+FL_setup*
+extracted/
+extracted_asar/
+extracted_driver/
+extracted_js/
+
+# Executables & binary builds (distributed via GitHub Releases)
+*.exe
+dist/bin/
+*.pdb
+
+# Temporary and editor files
+.vscode/
+.idea/
+*.log
+Thumbs.db
+Desktop.ini
