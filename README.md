@@ -33,6 +33,18 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
 
 ---
 
+## 📸 Screenshots
+
+| **Key Mapping & Layer Assignment** | **Macro Studio & Timeline Editor** |
+|:---:|:---:|
+| [![Key Mapping](screenshots/main_key_mapping.png)](screenshots/main_key_mapping.png) | [![Macro Studio](screenshots/macro_studio.png)](screenshots/macro_studio.png) |
+
+| **RGB Lighting Studio & Color Palette** | **Custom Per-Key Illumination (Light Edit)** |
+|:---:|:---:|
+| [![Lighting Presets & Palette](screenshots/rgb_lighting_presets.png)](screenshots/rgb_lighting_presets.png) | [![Per-Key Illumination](screenshots/per_key_illumination.png)](screenshots/per_key_illumination.png) |
+
+---
+
 ## 🚀 Key Features
 
 ### 🖥️ Native Desktop GUI
@@ -48,9 +60,11 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
     * **Loop N Times**: Plays a set number of times per press.
     * **Toggle Loop**: Starts looping on press, stops on next press.
   * **Import & Export**: Backup and share your macro library via native Windows `.json` file dialogs.
-* **RGB Lighting Studio**:
+* **RGB Lighting Studio & Color Palette**:
   * **16 Hardware Lighting Presets**: Static, Breathing, Neon, Rainbow Wave, Ripple, Raindrop, Snake, Reactive (Keypress), Convergence, Sine Wave, Kaleidoscope, Line Wave, Laser, Circle, and Dazzling.
-  * Complete control over Hue, Brightness (5 levels), and Animation Speed (6 levels).
+  * **Quick Preset Color Palette**: 16 one-click colors (Red, Cyan, Lime, Gold, Purple, White, etc.).
+  * **Interactive Color Picker & RGB Sliders**: Real-time slider and hex adjustment directly inside the Light tab.
+  * Complete control over Brightness (5 levels), Animation Speed (5 levels), and Rainbow Dazzle mode.
 * **Per-Key Illumination (Light Edit)**:
   * Interactive 87-key wireframe canvas to paint individual keys.
   * 3 Onboard Hardware Slots saved to keyboard EEPROM.
