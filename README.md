@@ -1,10 +1,10 @@
-﻿# ⌨️ FL-Driver (MK870 Rust Driver)
+# ⌨️ FL-Driver (MK870 Rust Driver)
 
 [![Language: Rust](https://img.shields.io/badge/Language-Rust-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg?logo=windows)](https://www.microsoft.com/windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Privacy: 100% Offline](https://img.shields.io/badge/Privacy-100%25%20Offline-success.svg)](#-why-fl-driver-the-clean-alternative)
-[![Release: 1.0.0](https://img.shields.io/badge/Release-1.0.0-blueviolet.svg)](https://github.com/Some1sm/fl-driver-rs/releases)
+[![Release: 1.0.0](https://img.shields.io/badge/Release-1.0.0-blueviolet.svg)](https://github.com/Some1sm/debloatedfl-driver/releases)
 
 A clean, high-performance, 100% offline, privacy-first driver and control suite for the **FL-ESPORTS MK870** (and compatible Royuan/YC500-based) mechanical keyboards, built natively in Rust.
 
@@ -144,8 +144,8 @@ The driver interfaces directly with the keyboard via Windows SetupAPI and low-le
 ### Build Steps
 ```powershell
 # Clone the repository
-git clone https://github.com/Some1sm/fl-driver-rs.git
-cd fl-driver-rs/fl-driver-rs
+git clone https://github.com/Some1sm/debloatedfl-driver.git
+cd debloatedfl-driver/fl-driver-rs
 
 # Build optimized release binary
 cargo build --release
