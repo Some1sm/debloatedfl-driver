@@ -1526,14 +1526,16 @@ impl KeyboardApp {
         } else {
             // Standard Preset Lighting Studio
             ui.horizontal(|ui| {
+                // Left Panel: Lighting Preset Modes & Parameter Controls
                 ui.vertical(|ui| {
                     ui.set_width(450.0);
                     egui::Frame::none()
                         .fill(COLOR_BG_PANEL)
                         .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
-                        .inner_margin(12.0)
+                        .rounding(6.0)
+                        .inner_margin(14.0)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Lighting Preset Modes").strong().color(COLOR_TEXT_ACTIVE));
+                            ui.label(RichText::new("Lighting Preset Modes").strong().size(15.0).color(COLOR_TEXT_ACTIVE));
                             ui.add_space(8.0);
                             ui.horizontal_wrapped(|ui| {
                                 for mode in LightMode::ALL {
@@ -1544,9 +1546,12 @@ impl KeyboardApp {
                                 }
                             });
 
-                            ui.add_space(12.0);
+                            ui.add_space(14.0);
                             ui.separator();
                             ui.add_space(8.0);
+
+                            ui.label(RichText::new("Effect Parameters:").strong().color(COLOR_TEXT_ACTIVE));
+                            ui.add_space(4.0);
 
                             ui.label(format!("Brightness: {} / 4", self.brightness));
                             if ui.add(egui::Slider::new(&mut self.brightness, 0..=4)).changed() {
@@ -1564,7 +1569,7 @@ impl KeyboardApp {
                                 self.apply_rgb();
                             }
 
-                            ui.add_space(12.0);
+                            ui.add_space(14.0);
                             ui.horizontal(|ui| {
                                 if ui.button(RichText::new("⚡ Apply Preset").color(COLOR_ACCENT_CYAN).strong()).clicked() {
                                     self.apply_rgb();
@@ -1574,6 +1579,168 @@ impl KeyboardApp {
                                     self.apply_rgb();
                                 }
                             });
+                        });
+                });
+
+                ui.add_space(14.0);
+
+                // Right Panel: Lighting Color Selection & Palette
+                ui.vertical(|ui| {
+                    ui.set_width(450.0);
+                    egui::Frame::none()
+                        .fill(COLOR_BG_PANEL)
+                        .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+                        .rounding(6.0)
+                        .inner_margin(14.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Effect Color & Palette").strong().size(15.0).color(COLOR_TEXT_ACTIVE));
+                            ui.label(RichText::new("Select the active color for your lighting effect (Static, Breathing, Wave, Reactive, etc.)").small().color(COLOR_TEXT_MUTED));
+                            ui.add_space(10.0);
+
+                            // Active Color Preview Card
+                            let cur_rgb = self.active_paint_color;
+                            let cur_c = Color32::from_rgb(cur_rgb[0], cur_rgb[1], cur_rgb[2]);
+
+                            ui.horizontal(|ui| {
+                                // Swatch preview box
+                                let (sw_rect, sw_resp) = ui.allocate_exact_size(Vec2::new(48.0, 36.0), egui::Sense::click());
+                                ui.painter().rect_filled(sw_rect, 6.0, cur_c);
+                                ui.painter().rect_stroke(sw_rect, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
+                                if sw_resp.clicked() {
+                                    self.color_picker_state.is_open = !self.color_picker_state.is_open;
+                                    if self.color_picker_state.is_open {
+                                        self.color_picker_state.set_rgb(cur_rgb[0], cur_rgb[1], cur_rgb[2]);
+                                    }
+                                }
+                                sw_resp.on_hover_text("Click to open interactive color picker popup");
+
+                                ui.add_space(8.0);
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(format!("#{:02X}{:02X}{:02X}", cur_rgb[0], cur_rgb[1], cur_rgb[2])).strong().size(14.0).color(COLOR_TEXT_ACTIVE));
+                                    ui.label(RichText::new(format!("RGB({}, {}, {})", cur_rgb[0], cur_rgb[1], cur_rgb[2])).small().color(COLOR_TEXT_MUTED));
+                                });
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let pick_btn = ui.add(
+                                        egui::Button::new(
+                                            RichText::new(if self.color_picker_state.is_open { "✖ Close Picker" } else { "🎨 Custom Color" })
+                                                .color(COLOR_ACCENT_CYAN)
+                                        )
+                                    );
+                                    if pick_btn.clicked() {
+                                        self.color_picker_state.is_open = !self.color_picker_state.is_open;
+                                        if self.color_picker_state.is_open {
+                                            self.color_picker_state.set_rgb(cur_rgb[0], cur_rgb[1], cur_rgb[2]);
+                                        }
+                                    }
+                                });
+                            });
+
+                            if self.rainbow {
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("ℹ Rainbow Dazzle mode is currently active. Choosing a color below will switch to single-color mode.").small().color(Color32::from_rgb(255, 200, 100)));
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+
+                            // Quick Preset Swatches
+                            ui.label(RichText::new("Quick Preset Palette:").strong().color(COLOR_TEXT_ACTIVE));
+                            ui.add_space(6.0);
+
+                            let presets: &[(&str, [u8; 3])] = &[
+                                ("Red", [255, 0, 0]),
+                                ("Orange", [255, 120, 0]),
+                                ("Amber", [255, 180, 0]),
+                                ("Yellow", [255, 255, 0]),
+                                ("Lime", [120, 255, 0]),
+                                ("Green", [0, 255, 0]),
+                                ("Emerald", [0, 255, 128]),
+                                ("Cyan", [0, 255, 255]),
+                                ("Sky Blue", [0, 160, 255]),
+                                ("Blue", [0, 60, 255]),
+                                ("Indigo", [80, 0, 200]),
+                                ("Purple", [150, 0, 255]),
+                                ("Magenta", [255, 0, 200]),
+                                ("Pink", [255, 80, 150]),
+                                ("Warm White", [255, 220, 180]),
+                                ("Pure White", [255, 255, 255]),
+                            ];
+
+                            egui::Grid::new("light_preset_color_grid")
+                                .spacing([8.0, 8.0])
+                                .show(ui, |ui| {
+                                    for (i, (name, rgb)) in presets.iter().enumerate() {
+                                        let is_active = self.active_paint_color == *rgb && !self.rainbow;
+                                        let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(44.0, 26.0), egui::Sense::click());
+                                        ui.painter().rect_filled(rect, 4.0, c);
+                                        let border_color = if is_active {
+                                            Color32::WHITE
+                                        } else if resp.hovered() {
+                                            COLOR_ACCENT_CYAN
+                                        } else {
+                                            Color32::from_rgb(50, 65, 75)
+                                        };
+                                        let border_width = if is_active { 2.0_f32 } else { 1.0_f32 };
+                                        ui.painter().rect_stroke(rect, 4.0, Stroke::new(border_width, border_color));
+
+                                        if resp.clicked() {
+                                            self.active_paint_color = *rgb;
+                                            self.rainbow = false;
+                                            self.apply_rgb();
+                                        }
+                                        resp.on_hover_text(format!("{} (#{}:{:02X}{:02X}{:02X})", name, "", rgb[0], rgb[1], rgb[2]));
+
+                                        if (i + 1) % 8 == 0 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+
+                            // Fine-tune RGB Sliders
+                            ui.label(RichText::new("RGB Sliders:").strong().color(COLOR_TEXT_ACTIVE));
+                            ui.add_space(4.0);
+
+                            let mut r = self.active_paint_color[0];
+                            let mut g = self.active_paint_color[1];
+                            let mut b = self.active_paint_color[2];
+                            let mut slider_changed = false;
+
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("R").color(Color32::from_rgb(255, 100, 100)).strong());
+                                if ui.add(egui::Slider::new(&mut r, 0..=255)).changed() { slider_changed = true; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("G").color(Color32::from_rgb(100, 255, 100)).strong());
+                                if ui.add(egui::Slider::new(&mut g, 0..=255)).changed() { slider_changed = true; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("B").color(Color32::from_rgb(100, 150, 255)).strong());
+                                if ui.add(egui::Slider::new(&mut b, 0..=255)).changed() { slider_changed = true; }
+                            });
+
+                            if slider_changed {
+                                self.active_paint_color = [r, g, b];
+                                self.rainbow = false;
+                                self.apply_rgb();
+                            }
+
+                            // Interactive Popup overlay if opened
+                            let mut popup_new_color = None;
+                            show_color_picker_popup(ui, &mut self.color_picker_state, &mut |c| {
+                                popup_new_color = Some(c);
+                            });
+                            if let Some(c) = popup_new_color {
+                                self.active_paint_color = c;
+                                self.rainbow = false;
+                                self.apply_rgb();
+                            }
                         });
                 });
             });
