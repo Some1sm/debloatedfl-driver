@@ -75,6 +75,14 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
   * **Wireless Sleep Timers**: Customize 2.4G and Bluetooth idle timeout delays.
   * **OLED Clock Synchronization**: One-click local time sync for display models.
   * **Factory Reset**: Revert hardware to factory defaults with safety prompt.
+* **Dual-Mode Connectivity (2.4G Wireless & USB Wired)**:
+  * **Dedicated 2.4G Wireless Mode**: High-speed low-latency typing, real-time battery % query, and software macros/key remapping active live in background.
+  * **Hot-Plug USB Auto-Detection**: Plug in the USB cable and flip the switch to USB anytime — the driver detects wired mode within 1.5 seconds and unlocks hardware EEPROM flashing automatically.
+  * **Hardware Memory Persistence**: RGB effects and hardware settings flashed over USB persist directly in onboard keyboard EEPROM and stay active when returning to 2.4G wireless.
+  * **Interactive Feature Guide**: Clear guidance and comparison matrix explaining what settings require USB flashing.
+* **Clean Windows GUI (No Blank CMD Window)**:
+  * Compiled as a native Win32 subsystem application (`#windows_subsystem = "windows"`). Double-clicking the app launches purely the graphical interface with zero blank console windows.
+  * Running from terminal with CLI arguments (`info`, `rgb`, etc.) dynamically re-attaches to your console session automatically.
 * **Accessibility & UI Scaling**:
   * Settings menu with live UI scaling slider (80% to 200%) and quick presets (100%, 120%, 140%, 160%).
   * Font size booster (`+0pt`, `+2pt`, `+4pt`) for high-resolution (1440p / 4K) displays.
