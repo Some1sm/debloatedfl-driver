@@ -139,7 +139,7 @@ pub fn run_cli_command(cmd: Commands) -> Result<(), String> {
             println!("Connection Mode: {}", if info.is_wireless { "2.4G Wireless Dongle" } else { "USB Wired (Cable)" });
             println!("Firmware Date:   {}", info.firmware_date);
             match info.battery_percent {
-                Some(bat) => println!("Battery Level:   {}%", bat),
+                Some(bat) => println!("Battery Level:   ~{}% (approx. 20% interval)", bat),
                 None => println!("Power Source:    USB Bus Powered (5V Cable)"),
             }
             println!("Device Path:     {}", info.path);

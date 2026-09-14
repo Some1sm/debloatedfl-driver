@@ -344,10 +344,10 @@ impl KeyboardBackend {
             "v2.0 (Standard)".to_string()
         };
 
-        // Battery percentage: guard against static RF buffer reading (byte 4 = 2)
+        // Battery percentage: RF dongle returns status buffer where byte 4 is battery tier or percentage
         let battery = if self.is_wireless {
             match self.get_battery() {
-                Ok(bat) if bat > 5 && bat <= 100 => Some(bat),
+                Ok(bat) if bat <= 100 => Some(bat),
                 _ => None,
             }
         } else {
@@ -460,12 +460,29 @@ impl KeyboardBackend {
         let mut req = [0u8; 64];
         req[0] = FEA_CMD_GET_BATTERY;
         let data = self.query(&req, CheckSumType::Bit7)?;
+        // Over 2.4G RF dongle, the hardware returns a status buffer where:
+        // byte 2: is_online flag (1 = connected/awake, 0 = sleeping/offline)
+        // byte 4: battery level/tier or percentage.
+        // If the hardware returns fine-grained percentage > 5, use it directly.
+        // If it returns quantized tiers (0..=4), map to approximate intervals:
+        //   0 => 20% (Low / Critical warning)
+        //   1 => 40% (Fair)
+        //   2 => 60% (Normal / Medium)
+        //   3 => 80% (Good)
+        //   4 => 100% (Full)
         let bat = if data[4] > 5 && data[4] <= 100 {
             data[4]
         } else if data[5] > 5 && data[5] <= 100 {
             data[5]
         } else {
-            100
+            match data[4] {
+                0 => 20,
+                1 => 40,
+                2 => 60,
+                3 => 80,
+                4 => 100,
+                _ => 60,
+            }
         };
         Ok(bat)
     }
@@ -483,6 +500,26 @@ mod tests {
             }
             Err(e) => {
                 println!("Device discovery error: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_query_battery_raw() {
+        if let Ok(backend) = KeyboardBackend::connect() {
+            println!("Connected: path={}, is_wireless={}", backend.device_path, backend.is_wireless);
+            let mut req = [0u8; 64];
+            req[0] = FEA_CMD_GET_BATTERY;
+            if let Ok(data) = backend.query(&req, CheckSumType::Bit7) {
+                println!("FEA_CMD_GET_BATTERY raw response:\n{:?}", &data[..32]);
+            } else {
+                println!("FEA_CMD_GET_BATTERY query failed");
+            }
+
+            let mut req_info = [0u8; 64];
+            req_info[0] = FEA_CMD_GET_INFOR;
+            if let Ok(data_info) = backend.query(&req_info, CheckSumType::Bit7) {
+                println!("FEA_CMD_GET_INFOR raw response:\n{:?}", &data_info[..32]);
             }
         }
     }
