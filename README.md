@@ -68,7 +68,7 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
 * **Per-Key Illumination (Light Edit)**:
   * Interactive 87-key wireframe canvas to paint individual keys.
   * 3 Onboard Hardware Slots saved to keyboard EEPROM.
-  * Direct USB HID upload using 7-packet raw RGB streaming protocol.
+  * Direct HID upload (USB cable or 2.4G dongle) using 7-packet raw RGB streaming protocol.
 * **Performance & Hardware Controls**:
   * **Polling Rate**: Toggle 125 Hz, 250 Hz, 500 Hz, or 1000 Hz (1 ms response).
   * **Debounce Filter**: Hardware switch debounce slider (1 ms to 60 ms).
@@ -76,10 +76,11 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
   * **OLED Clock Synchronization**: One-click local time sync for display models.
   * **Factory Reset**: Revert hardware to factory defaults with safety prompt.
 * **Dual-Mode Connectivity (2.4G Wireless & USB Wired)**:
-  * **Dedicated 2.4G Wireless Mode**: High-speed low-latency typing, real-time battery % query, and software macros/key remapping active live in background.
-  * **Hot-Plug USB Auto-Detection**: Plug in the USB cable and flip the switch to USB anytime — the driver detects wired mode within 1.5 seconds and unlocks hardware EEPROM flashing automatically.
-  * **Hardware Memory Persistence**: RGB effects and hardware settings flashed over USB persist directly in onboard keyboard EEPROM and stay active when returning to 2.4G wireless.
-  * **Interactive Feature Guide**: Clear guidance and comparison matrix explaining what settings require USB flashing.
+  * **2.4G Wireless Configuration (relaying receivers)**: Receivers that support the vendor relay handshake get lighting, per-key colors, polling rate, debounce, and sleep settings over 2.4G, plus live battery and awake/asleep state.
+  * **Keystroke-only receivers**: The original `05AC:024F` MK870 receiver forwards keystrokes but not configuration commands. The driver detects this and asks for the USB cable instead of showing made-up values.
+  * **Settings persist across modes**: Lighting and other settings saved over the USB cable stay active after switching to 2.4G.
+  * **Bluetooth**: Over Bluetooth the keyboard acknowledges configuration writes but does not apply them, and rejects feature reads, so configuration also requires the USB cable.
+  * **Hot-Plug Auto-Detection**: Switch between the USB cable and the 2.4G dongle anytime — the driver re-detects the connection within 1.5 seconds.
 * **Clean Windows GUI (No Blank CMD Window)**:
   * Compiled as a native Win32 subsystem application (`#windows_subsystem = "windows"`). Double-clicking the app launches purely the graphical interface with zero blank console windows.
   * Running from terminal with CLI arguments (`info`, `rgb`, etc.) dynamically re-attaches to your console session automatically.
@@ -137,8 +138,8 @@ The official manufacturer software (`FL_setup_2.0.18.exe`) is an Electron web ap
 
 The driver interfaces directly with the keyboard via Windows SetupAPI and low-level HID Feature Reports:
 * **Target VID/PID**:
-  * Wired USB: `VID_05AC & PID_024F` (Usage Page `0x01`, Usage `0x06`).
-  * Wireless / 2.4G: `VID_3151 & PID_5088` / `PID_5089`.
+  * Wired USB and 2.4G dongle both enumerate as `VID_05AC & PID_024F`, interface `MI_00` (Usage Page `0x01`, Usage `0x06`).
+  * The dongle is told apart by its product string, `2.4G Wireless Device`.
 * **Report Structure**:
   * Report ID: `0x00`
   * Frame Length: 65 bytes (`0x00` Report ID + 64-byte payload).
@@ -146,14 +147,22 @@ The driver interfaces directly with the keyboard via Windows SetupAPI and low-le
   * `0x07` (`FEA_CMD_SET_LEDPARAM`): Global lighting mode, speed, brightness, and color.
   * `0x87` (`FEA_CMD_GET_LEDPARAM`): Query active lighting status.
   * `0x04` (`FEA_CMD_SET_REPORT`): Set USB polling rate.
-  * `0x05` (`FEA_CMD_SET_DEBOUNCE`): Set switch debounce delay.
-  * `0x09` (`FEA_CMD_SET_SLEEPTIME`): Set 2.4G and Bluetooth sleep timeouts.
+  * `0x11` (`FEA_CMD_SET_DEBOUNCE`): Set switch debounce delay.
+  * `0x12` (`FEA_CMD_SET_SLEEPTIME`): Set 2.4G and Bluetooth sleep timeouts.
   * `0x0C` (`FEA_CMD_SET_USERPIC`): Upload 7 packets × 56 bytes of raw per-key RGB matrix data.
-  * `0x1B` (`FEA_CMD_SET_OLEDCLOCK`): Push Year/Month/Day/Hour/Min/Sec to onboard clock.
-  * `0x01` (`FEA_CMD_SET_RESERT`): Hardware factory reset.
-* **Checksum Types**:
-  * `Bit7`: 2's complement inverted checksum written to `buf[63]` for parameter commands.
-  * `None`: Used for raw 56-byte per-key illumination frames to preserve all RGB channels.
+  * `0x28` (`FEA_CMD_SET_OLEDCLOCK`): Push Year/Month/Day/Hour/Min/Sec to onboard clock.
+  * `0x02` (`FEA_CMD_SET_RESERT`): Hardware factory reset.
+* **Checksum Types** (as computed by the vendor driver):
+  * `Bit7`: `!(buf[0] + … + buf[6])` written to `buf[7]`. Used for queries and most settings.
+  * `Bit8`: `!(buf[0] + … + buf[7])` written to `buf[8]`. Used for `SET_LEDPARAM`, whose color occupies bytes 5–7.
+* **2.4G Dongle Relay** (reverse-engineered from the vendor's `iot_driver.exe`):
+  * A relaying receiver answers these opcodes itself (sent without a checksum):
+    * `0xFD`: probe. Relaying receivers reply `AA 55`; the driver only uses the relay when they do.
+    * `0xFB`: status. Reply bytes are `[reply ready = 1, battery %, keyboard offline (0 = awake), write delivered = 1]`.
+    * `0xFC`: fetch the keyboard's buffered reply; the next feature read returns it.
+  * Write: poll `0xFB` until the last write was delivered, send the command, poll again until it is delivered.
+  * Read: poll `0xFB` until a reply is ready, send `0xFC`, then read the 64-byte reply.
+  * The original `05AC:024F` receiver (firmware dated 2022-12-07) does not implement this: it returns the same fixed 64-byte frame to every request and does not forward commands to the keyboard.
 
 ---
 

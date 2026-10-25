@@ -78,12 +78,105 @@ const OPEN_EXISTING: u32 = 3;
 const DIGCF_PRESENT: u32 = 0x02;
 const DIGCF_DEVICEINTERFACE: u32 = 0x10;
 
+// 2.4G relay timing. The vendor driver polls every 100 ms for up to ~3 s; the receiver
+// answers status requests locally, so polling faster just cuts per-command latency.
+const RF_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const RF_TIMEOUT: Duration = Duration::from_millis(3000);
+const RF_FETCH_DELAY: Duration = Duration::from_millis(20);
+
+struct HidHandle(*mut std::ffi::c_void);
+
+impl HidHandle {
+    fn open(path: &str) -> Result<Self, String> {
+        let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide_path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE || handle.is_null() {
+            return Err("Failed to open HID handle to MK870".to_string());
+        }
+        Ok(Self(handle))
+    }
+
+    fn set_feature(&self, data: &[u8; 64]) -> Result<(), String> {
+        let mut report = [0u8; 65];
+        report[0] = 0x00; // Report ID 0
+        report[1..65].copy_from_slice(data);
+        if unsafe { HidD_SetFeature(self.0, report.as_ptr(), 65) } == 0 {
+            return Err("HidD_SetFeature failed".to_string());
+        }
+        Ok(())
+    }
+
+    fn get_feature(&self) -> Result<[u8; 64], String> {
+        let mut report = [0u8; 65];
+        report[0] = 0x00; // Report ID 0
+        if unsafe { HidD_GetFeature(self.0, report.as_mut_ptr(), 65) } == 0 {
+            return Err("HidD_GetFeature failed".to_string());
+        }
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&report[1..65]);
+        Ok(out)
+    }
+}
+
+impl Drop for HidHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// The vendor driver's handshake check: relaying receivers answer `RF_CMD_PROBE` with `AA 55`.
+fn probe_rf_relay(h: &HidHandle) -> bool {
+    let mut req = [0u8; 64];
+    req[0] = RF_CMD_PROBE;
+    if h.set_feature(&req).is_err() {
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(1));
+    matches!(h.get_feature(), Ok(reply) if reply[0] == 0xAA && reply[1] == 0x55)
+}
+
+fn rf_status(h: &HidHandle) -> Result<RfStatus, String> {
+    let mut req = [0u8; 64];
+    req[0] = RF_CMD_GET_STATUS;
+    h.set_feature(&req)?;
+    Ok(parse_rf_status(&h.get_feature()?))
+}
+
+fn rf_wait(h: &HidHandle, ready: impl Fn(&RfStatus) -> bool) -> Result<RfStatus, String> {
+    let start = std::time::Instant::now();
+    loop {
+        let status = rf_status(h)?;
+        if !status.online {
+            return Err("Keyboard is asleep. Press any key on the MK870 to wake it".to_string());
+        }
+        if ready(&status) {
+            return Ok(status);
+        }
+        if start.elapsed() > RF_TIMEOUT {
+            return Err("Timed out waiting for the keyboard over 2.4G".to_string());
+        }
+        std::thread::sleep(RF_POLL_INTERVAL);
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct KeyboardInfo {
     pub name: String,
     pub vid: u16,
     pub pid: u16,
     pub is_wireless: bool,
+    /// Settings can be read and written over this connection (false for keystroke-only 2.4G receivers).
+    pub config_supported: bool,
     pub path: String,
     pub firmware_date: String,
     pub battery_percent: Option<u8>,
@@ -92,15 +185,25 @@ pub struct KeyboardInfo {
 pub struct KeyboardBackend {
     pub device_path: String,
     pub is_wireless: bool,
+    /// The 2.4G receiver relays configuration commands (it answered the `RF_CMD_PROBE` handshake).
+    /// Older MK870 receivers only carry keystrokes and return a fixed frame to every request.
+    pub rf_relay: bool,
 }
 
 impl KeyboardBackend {
     pub fn connect() -> Result<Self, String> {
         let (dev_path, is_wireless) = Self::find_hid_device_native()?;
+        let rf_relay = is_wireless && probe_rf_relay(&HidHandle::open(&dev_path)?);
         Ok(Self {
             device_path: dev_path,
             is_wireless,
+            rf_relay,
         })
+    }
+
+    /// Whether settings can be read and written over the current connection.
+    pub fn config_supported(&self) -> bool {
+        !self.is_wireless || self.rf_relay
     }
 
     /// Dynamic enumeration of HID devices matching VID_05AC & PID_024F via Windows SetupAPI
@@ -258,98 +361,72 @@ impl KeyboardBackend {
         Err("Could not open handle to MK870 HID interface".to_string())
     }
 
-    pub fn send_command(&self, cmd: &[u8; 64], cs_type: CheckSumType) -> Result<(), String> {
-        let wide_path: Vec<u16> = self.device_path.encode_utf16().chain(std::iter::once(0)).collect();
-        let handle = unsafe {
-            CreateFileW(
-                wide_path.as_ptr(),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                std::ptr::null_mut(),
-                OPEN_EXISTING,
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-
-        if handle == INVALID_HANDLE || handle.is_null() {
-            return Err("Failed to open HID handle to MK870".to_string());
+    fn open(&self) -> Result<HidHandle, String> {
+        if !self.config_supported() {
+            return Err("This 2.4G receiver only carries keystrokes, not settings. Use the USB cable to change keyboard settings".to_string());
         }
+        HidHandle::open(&self.device_path)
+    }
 
+    /// Over 2.4G every command is relayed: wait until the receiver is idle, send,
+    /// then wait until it reports the packet was delivered to the keyboard.
+    pub fn send_command(&self, cmd: &[u8; 64], cs_type: CheckSumType) -> Result<(), String> {
         let mut p_buf = *cmd;
         calculate_checksum(&mut p_buf, cs_type);
 
-        let mut report = [0u8; 65];
-        report[0] = 0x00; // Report ID 0
-        report[1..65].copy_from_slice(&p_buf);
-
-        let ok = unsafe { HidD_SetFeature(handle, report.as_ptr(), 65) };
-        unsafe { CloseHandle(handle) };
-
-        if ok == 0 {
-            Err("HidD_SetFeature failed".to_string())
-        } else {
+        let h = self.open()?;
+        if self.rf_relay {
+            rf_wait(&h, |s| s.write_done)?;
+            h.set_feature(&p_buf)?;
+            rf_wait(&h, |s| s.write_done)?;
             Ok(())
+        } else {
+            h.set_feature(&p_buf)
         }
     }
 
+    /// Over 2.4G the keyboard's reply is buffered in the receiver: wait for it,
+    /// ask the receiver to hand it over, then read it like a wired reply.
     pub fn read_response(&self) -> Result<[u8; 64], String> {
-        let wide_path: Vec<u16> = self.device_path.encode_utf16().chain(std::iter::once(0)).collect();
-        let handle = unsafe {
-            CreateFileW(
-                wide_path.as_ptr(),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                std::ptr::null_mut(),
-                OPEN_EXISTING,
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-
-        if handle == INVALID_HANDLE || handle.is_null() {
-            return Err("Failed to open HID handle to MK870".to_string());
+        let h = self.open()?;
+        if self.rf_relay {
+            rf_wait(&h, |s| s.ready_read)?;
+            let mut fetch = [0u8; 64];
+            fetch[0] = RF_CMD_FETCH_REPLY;
+            h.set_feature(&fetch)?;
+            std::thread::sleep(RF_FETCH_DELAY);
         }
-
-        let mut report = [0u8; 65];
-        report[0] = 0x00; // Report ID 0
-        let ok = unsafe { HidD_GetFeature(handle, report.as_mut_ptr(), 65) };
-        unsafe { CloseHandle(handle) };
-
-        if ok == 0 {
-            Err("HidD_GetFeature failed".to_string())
-        } else {
-            let mut out = [0u8; 64];
-            out.copy_from_slice(&report[1..65]);
-            Ok(out)
-        }
+        h.get_feature()
     }
 
     pub fn query(&self, cmd: &[u8; 64], cs_type: CheckSumType) -> Result<[u8; 64], String> {
         self.send_command(cmd, cs_type)?;
-        std::thread::sleep(Duration::from_millis(15));
+        if !self.rf_relay {
+            std::thread::sleep(Duration::from_millis(15));
+        }
         self.read_response()
+    }
+
+    /// Link state reported by a relaying 2.4G receiver (battery, keyboard awake or asleep).
+    pub fn rf_status(&self) -> Result<RfStatus, String> {
+        if !self.rf_relay {
+            return Err("RF status is only available through a relaying 2.4G receiver".to_string());
+        }
+        rf_status(&self.open()?)
     }
 
     pub fn get_keyboard_info(&self) -> Result<KeyboardInfo, String> {
         let mut cmd = [0u8; 64];
         cmd[0] = FEA_CMD_GET_INFOR;
-        let raw = self.query(&cmd, CheckSumType::Bit7).unwrap_or([0u8; 64]);
-
-        let fw_date = if raw[27] == 0x22 {
-            format!("20{:02X}-{:02X}-{:02X}", raw[27], raw[28], raw[29])
-        } else if raw[28] == 0x22 {
-            format!("20{:02X}-{:02X}-{:02X}", raw[28], raw[29], raw[30])
-        } else {
-            "v2.0 (Standard)".to_string()
+        let fw_date = match self.query(&cmd, CheckSumType::Bit7) {
+            Ok(raw) if raw[27] == 0x22 => format!("20{:02X}-{:02X}-{:02X}", raw[27], raw[28], raw[29]),
+            Ok(raw) if raw[28] == 0x22 => format!("20{:02X}-{:02X}-{:02X}", raw[28], raw[29], raw[30]),
+            Ok(_) => "v2.0 (Standard)".to_string(),
+            Err(_) => "unknown".to_string(),
         };
 
-        // Battery percentage: RF dongle returns status buffer where byte 4 is battery tier or percentage
-        let battery = if self.is_wireless {
-            match self.get_battery() {
-                Ok(bat) if bat <= 100 => Some(bat),
-                _ => None,
-            }
+        let battery = if self.rf_relay {
+            self.get_battery().ok()
         } else {
             None
         };
@@ -359,6 +436,7 @@ impl KeyboardBackend {
             vid: 0x05AC,
             pid: 0x024F,
             is_wireless: self.is_wireless,
+            config_supported: self.config_supported(),
             path: self.device_path.clone(),
             firmware_date: fw_date,
             battery_percent: battery,
@@ -374,7 +452,8 @@ impl KeyboardBackend {
         dazzle: bool,
     ) -> Result<(), String> {
         let packet = build_set_led(mode, brightness, speed, color, dazzle);
-        self.send_command(&packet, CheckSumType::Bit7)
+        // Colour occupies bytes 5..=7, so this command uses the 8-byte checksum.
+        self.send_command(&packet, CheckSumType::Bit8)
     }
 
     pub fn set_per_key_rgb(
@@ -385,11 +464,13 @@ impl KeyboardBackend {
     ) -> Result<(), String> {
         let packets = crate::protocol::packet::build_per_key_packets(key_colors, layer);
         for p in &packets {
-            self.send_command(p, CheckSumType::None)?;
-            std::thread::sleep(std::time::Duration::from_millis(15));
+            self.send_command(p, CheckSumType::Bit7)?;
+            if !self.is_wireless {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
         }
         let mode_cmd = crate::protocol::packet::build_set_user_pic_mode(layer, brightness);
-        self.send_command(&mode_cmd, CheckSumType::Bit7)?;
+        self.send_command(&mode_cmd, CheckSumType::Bit8)?;
         Ok(())
     }
 
@@ -456,35 +537,13 @@ impl KeyboardBackend {
         self.send_command(&packet, CheckSumType::Bit7)
     }
 
+    /// Battery level as reported by the 2.4G receiver (only known while the keyboard is awake).
     pub fn get_battery(&self) -> Result<u8, String> {
-        let mut req = [0u8; 64];
-        req[0] = FEA_CMD_GET_BATTERY;
-        let data = self.query(&req, CheckSumType::Bit7)?;
-        // Over 2.4G RF dongle, the hardware returns a status buffer where:
-        // byte 2: is_online flag (1 = connected/awake, 0 = sleeping/offline)
-        // byte 4: battery level/tier or percentage.
-        // If the hardware returns fine-grained percentage > 5, use it directly.
-        // If it returns quantized tiers (0..=4), map to approximate intervals:
-        //   0 => 20% (Low / Critical warning)
-        //   1 => 40% (Fair)
-        //   2 => 60% (Normal / Medium)
-        //   3 => 80% (Good)
-        //   4 => 100% (Full)
-        let bat = if data[4] > 5 && data[4] <= 100 {
-            data[4]
-        } else if data[5] > 5 && data[5] <= 100 {
-            data[5]
-        } else {
-            match data[4] {
-                0 => 20,
-                1 => 40,
-                2 => 60,
-                3 => 80,
-                4 => 100,
-                _ => 60,
-            }
-        };
-        Ok(bat)
+        let status = self.rf_status()?;
+        if !status.online {
+            return Err("Keyboard is asleep".to_string());
+        }
+        Ok(status.battery.min(100))
     }
 }
 
@@ -505,21 +564,18 @@ mod tests {
     }
 
     #[test]
-    fn test_query_battery_raw() {
+    fn test_query_raw() {
         if let Ok(backend) = KeyboardBackend::connect() {
             println!("Connected: path={}, is_wireless={}", backend.device_path, backend.is_wireless);
-            let mut req = [0u8; 64];
-            req[0] = FEA_CMD_GET_BATTERY;
-            if let Ok(data) = backend.query(&req, CheckSumType::Bit7) {
-                println!("FEA_CMD_GET_BATTERY raw response:\n{:?}", &data[..32]);
-            } else {
-                println!("FEA_CMD_GET_BATTERY query failed");
+            if backend.is_wireless {
+                println!("RF status: {:?}", backend.rf_status());
             }
 
             let mut req_info = [0u8; 64];
             req_info[0] = FEA_CMD_GET_INFOR;
-            if let Ok(data_info) = backend.query(&req_info, CheckSumType::Bit7) {
-                println!("FEA_CMD_GET_INFOR raw response:\n{:?}", &data_info[..32]);
+            match backend.query(&req_info, CheckSumType::Bit7) {
+                Ok(data_info) => println!("FEA_CMD_GET_INFOR raw response:\n{:02X?}", &data_info[..32]),
+                Err(e) => println!("FEA_CMD_GET_INFOR query failed: {}", e),
             }
         }
     }
