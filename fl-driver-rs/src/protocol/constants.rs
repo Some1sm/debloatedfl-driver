@@ -29,6 +29,12 @@ pub const FEA_CMD_SET_USERPIC: u8 = 0x0C;
 pub const FEA_CMD_GET_USERPIC: u8 = 0x8C;
 pub const FEA_CMD_SET_OLEDCLOCK: u8 = 0x28;
 
+// 2.4G receiver relay opcodes. A relaying dongle answers these itself (no checksum) and
+// forwards every other feature report to the keyboard over RF.
+pub const RF_CMD_GET_STATUS: u8 = 0xFB;
+pub const RF_CMD_FETCH_REPLY: u8 = 0xFC;
+pub const RF_CMD_PROBE: u8 = 0xFD;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum CheckSumType {

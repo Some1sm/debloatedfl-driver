@@ -137,10 +137,15 @@ pub fn run_cli_command(cmd: Commands) -> Result<(), String> {
             println!("Vendor ID (VID): 0x{:04X}", info.vid);
             println!("Product ID (PID):0x{:04X}", info.pid);
             println!("Connection Mode: {}", if info.is_wireless { "2.4G Wireless Dongle" } else { "USB Wired (Cable)" });
+            if !info.config_supported {
+                println!("Settings:        not available (this 2.4G receiver only carries keystrokes; use the USB cable)");
+            }
             println!("Firmware Date:   {}", info.firmware_date);
-            match info.battery_percent {
-                Some(bat) => println!("Battery Level:   ~{}% (approx. 20% interval)", bat),
-                None => println!("Power Source:    USB Bus Powered (5V Cable)"),
+            match (info.is_wireless, info.config_supported, info.battery_percent) {
+                (true, _, Some(bat)) => println!("Battery Level:   {}%", bat),
+                (true, true, None) => println!("Battery Level:   unknown (keyboard asleep, press any key to wake it)"),
+                (true, false, None) => println!("Battery Level:   unknown"),
+                (false, _, _) => println!("Power Source:    USB Bus Powered (5V Cable)"),
             }
             println!("Device Path:     {}", info.path);
 
@@ -178,30 +183,18 @@ pub fn run_cli_command(cmd: Commands) -> Result<(), String> {
         }
         Commands::Sleep { bt, wireless } => {
             println!("[*] Updating wireless sleep timeouts: 2.4G = {}s, BT = {}s...", wireless, bt);
-            match backend.set_sleep(bt, wireless, bt * 14, wireless * 14) {
-                Ok(_) => println!("[+] Sleep timers updated successfully."),
-                Err(_) => {
-                    println!("[*] Note: Sleep timeout is automatically managed by the 2.4G wireless receiver on this hardware model.");
-                }
-            }
+            backend.set_sleep(bt, wireless, bt * 14, wireless * 14)?;
+            println!("[+] Sleep timers updated successfully.");
         }
         Commands::Debounce { ms } => {
             println!("[*] Setting switch debounce time to {} ms...", ms);
-            match backend.set_debounce(ms) {
-                Ok(_) => println!("[+] Debounce filter set to {} ms.", ms),
-                Err(_) => {
-                    println!("[*] Note: Switch debounce filter is fixed in hardware on this keyboard model.");
-                }
-            }
+            backend.set_debounce(ms)?;
+            println!("[+] Debounce filter set to {} ms.", ms);
         }
         Commands::Clock => {
             println!("[*] Synchronizing onboard screen clock with system time...");
-            match backend.sync_clock() {
-                Ok(_) => println!("[+] Clock synchronized successfully!"),
-                Err(_) => {
-                    println!("[*] Note: Clock synchronization is only applicable for models with an integrated OLED/LCD display.");
-                }
-            }
+            backend.sync_clock()?;
+            println!("[+] Clock synchronized successfully!");
         }
         Commands::Reset => {
             println!("[!] Performing keyboard factory reset...");

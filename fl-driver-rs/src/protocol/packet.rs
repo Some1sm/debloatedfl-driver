@@ -1,22 +1,35 @@
 use super::constants::*;
 
+/// Vendor checksum: the inverted byte-sum of the first 7 (Bit7) or 8 (Bit8) bytes,
+/// stored right after them. The 2.4G receiver relies on it; wired mode tolerates it.
 pub fn calculate_checksum(buf: &mut [u8; 64], cs_type: CheckSumType) {
-    match cs_type {
-        CheckSumType::Bit7 => {
-            let mut sum: u8 = 0;
-            for i in 0..63 {
-                sum = sum.wrapping_add(buf[i]);
-            }
-            buf[63] = ((sum ^ 0xFF).wrapping_add(1)) as u8;
-        }
-        CheckSumType::Bit8 => {
-            let mut sum: u8 = 0;
-            for i in 0..63 {
-                sum = sum.wrapping_add(buf[i]);
-            }
-            buf[63] = sum;
-        }
-        CheckSumType::None => {}
+    let n = match cs_type {
+        CheckSumType::Bit7 => 7,
+        CheckSumType::Bit8 => 8,
+        CheckSumType::None => return,
+    };
+    let sum = buf[..n].iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+    buf[n] = !sum;
+}
+
+/// Status frame the 2.4G receiver returns for `RF_CMD_GET_STATUS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RfStatus {
+    /// Keyboard reply is buffered in the receiver and can be fetched.
+    pub ready_read: bool,
+    pub battery: u8,
+    /// Keyboard is awake and linked (it sleeps after idling and wakes on a keypress).
+    pub online: bool,
+    /// Last command was delivered to the keyboard.
+    pub write_done: bool,
+}
+
+pub fn parse_rf_status(data: &[u8; 64]) -> RfStatus {
+    RfStatus {
+        ready_read: data[0] == 1,
+        battery: data[1],
+        online: data[2] == 0,
+        write_done: data[3] == 1,
     }
 }
 
@@ -203,3 +216,34 @@ pub fn build_set_user_pic_mode(layer: u8, brightness: u8) -> [u8; 64] {
     buf
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_matches_vendor_driver() {
+        let mut get = [0u8; 64];
+        get[0] = FEA_CMD_GET_LEDPARAM;
+        calculate_checksum(&mut get, CheckSumType::Bit7);
+        assert_eq!(get[7], !0x87);
+
+        let mut led = build_set_led(LightMode::AlwaysOn, 4, 2, [0x10, 0x20, 0x30], false);
+        calculate_checksum(&mut led, CheckSumType::Bit8);
+        let sum = led[..8].iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        assert_eq!(led[8], !sum);
+        assert_eq!(&led[5..8], &[0x10, 0x20, 0x30]);
+    }
+
+    #[test]
+    fn rf_status_frame() {
+        let mut asleep = [0u8; 64];
+        asleep[..4].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+        assert!(!parse_rf_status(&asleep).online);
+
+        let mut ready = [0u8; 64];
+        ready[..4].copy_from_slice(&[0x01, 87, 0x00, 0x01]);
+        let s = parse_rf_status(&ready);
+        assert!(s.online && s.ready_read && s.write_done);
+        assert_eq!(s.battery, 87);
+    }
+}

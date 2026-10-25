@@ -31,6 +31,12 @@ pub fn run_gui() -> Result<(), eframe::Error> {
     )
 }
 
+/// True once a slider value should be written to the keyboard: on release after a drag,
+/// or on a click/keyboard change. Over 2.4G every write is a relayed round-trip.
+fn slider_committed(resp: &egui::Response) -> bool {
+    resp.drag_stopped() || (resp.changed() && !resp.dragged())
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum NavTab {
     Main,
@@ -148,7 +154,8 @@ pub struct KeyboardApp {
 
     // Hot-plug detection & Wireless Mode state
     last_device_scan: Instant,
-    show_usb_settings_modal: bool,
+    last_rf_poll: Instant,
+    rf_online: bool,
 }
 
 impl KeyboardApp {
@@ -301,7 +308,8 @@ impl KeyboardApp {
             font_size_delta: app_settings.font_size_delta,
 
             last_device_scan: Instant::now(),
-            show_usb_settings_modal: false,
+            last_rf_poll: Instant::now(),
+            rf_online: false,
         };
 
         app.init_backend();
@@ -337,12 +345,20 @@ impl KeyboardApp {
                     self.sleep_24_min = (sleep.time_24 / 60).max(1);
                     self.sleep_bt_min = (sleep.time_bt / 60).max(1);
                 }
+                let relay = b.rf_relay;
+                self.rf_online = if relay { b.rf_status().map(|s| s.online).unwrap_or(false) } else { true };
                 self.backend = Some(Arc::new(Mutex::new(b)));
                 self.error_message = None;
-                if is_wl {
-                    self.status_message = Some("Connected via 2.4G Wireless Dongle. Connect USB cable for hardware lighting & EEPROM flashing.".to_string());
+                if !is_wl {
+                    self.status_message = Some("Connected via USB Cable.".to_string());
+                } else if !relay {
+                    self.status_message = None;
+                    self.error_message = Some("Connected via 2.4G dongle. This receiver only carries keystrokes; connect the USB cable to change keyboard settings.".to_string());
+                } else if self.rf_online {
+                    self.status_message = Some("Connected via 2.4G Wireless Dongle.".to_string());
                 } else {
-                    self.status_message = Some("Connected via USB Cable. All hardware controls and EEPROM flashing unlocked!".to_string());
+                    self.status_message = None;
+                    self.error_message = Some("2.4G dongle found but the keyboard is asleep. Press any key on the MK870 to wake it.".to_string());
                 }
             }
             Err(e) => {
@@ -352,10 +368,6 @@ impl KeyboardApp {
     }
 
     fn apply_rgb(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("MK870 Hardware limitation: RGB effects require USB wired connection. Connect USB cable, flip switch to USB, and click Apply.".to_string());
-            return;
-        }
         if let Some(backend_arc) = &self.backend {
             if let Ok(backend) = backend_arc.lock() {
                 let col = self.active_paint_color;
@@ -375,10 +387,6 @@ impl KeyboardApp {
     fn apply_per_key_rgb(&mut self) {
         if let Some(backend_arc) = &self.backend {
             if let Ok(backend) = backend_arc.lock() {
-                if backend.is_wireless {
-                    self.error_message = Some("MK870 Hardware limitation: Per-key RGB upload requires USB wired cable. Connect cable, flip switch to USB, and click Apply.".to_string());
-                    return;
-                }
                 match backend.set_per_key_rgb(&self.key_colors, self.light_layer, self.brightness) {
                     Ok(_) => {
                         self.status_message = Some(format!("✔ Custom per-key illumination successfully applied to Layer {}!", self.light_layer));
@@ -390,7 +398,7 @@ impl KeyboardApp {
                 }
             }
         } else {
-            self.error_message = Some("Keyboard not detected. Please connect your MK870 via USB cable to upload custom lights.".to_string());
+            self.error_message = Some("Keyboard not detected. Connect your MK870 via USB cable or 2.4G dongle to upload custom lights.".to_string());
         }
     }
 
@@ -435,70 +443,71 @@ impl KeyboardApp {
         }
     }
 
-    fn apply_polling_rate(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("Hardware polling rate can only be configured in USB wired mode.".to_string());
-            return;
-        }
-        if let Some(backend_arc) = &self.backend {
-            if let Ok(backend) = backend_arc.lock() {
-                let _ = backend.set_polling_rate(self.polling_rate);
-                self.status_message = Some(format!("Polling rate updated to {} Hz", self.polling_rate.to_hz()));
+    /// Runs a hardware command and reports the outcome in the footer.
+    fn run_device_command(&mut self, success: String, cmd: impl FnOnce(&KeyboardBackend) -> Result<(), String>) {
+        let result = match &self.backend {
+            Some(backend_arc) => match backend_arc.lock() {
+                Ok(backend) => cmd(&backend),
+                Err(_) => return,
+            },
+            None => return,
+        };
+        match result {
+            Ok(()) => {
+                self.status_message = Some(success);
+                self.error_message = None;
+            }
+            Err(e) => {
+                self.status_message = None;
+                self.error_message = Some(e);
             }
         }
+    }
+
+    fn apply_polling_rate(&mut self) {
+        let rate = self.polling_rate;
+        self.run_device_command(format!("Polling rate updated to {} Hz", rate.to_hz()), |b| b.set_polling_rate(rate));
     }
 
     fn apply_debounce(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("Switch debounce filter can only be configured in USB wired mode.".to_string());
-            return;
-        }
-        if let Some(backend_arc) = &self.backend {
-            if let Ok(backend) = backend_arc.lock() {
-                let _ = backend.set_debounce(self.debounce_ms);
-                self.status_message = Some(format!("Debounce filter set to {} ms", self.debounce_ms));
-            }
-        }
+        let ms = self.debounce_ms;
+        self.run_device_command(format!("Debounce filter set to {} ms", ms), |b| b.set_debounce(ms));
     }
 
     fn apply_sleep(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("Sleep timeout can only be configured in USB wired mode.".to_string());
-            return;
-        }
-        if let Some(backend_arc) = &self.backend {
-            if let Ok(backend) = backend_arc.lock() {
-                let s24 = self.sleep_24_min * 60;
-                let sbt = self.sleep_bt_min * 60;
-                let _ = backend.set_sleep(sbt, s24, sbt * 14, s24 * 14);
-                self.status_message = Some("Sleep timeout saved to device".to_string());
-            }
-        }
+        let s24 = self.sleep_24_min * 60;
+        let sbt = self.sleep_bt_min * 60;
+        self.run_device_command("Sleep timeout saved to device".to_string(), |b| b.set_sleep(sbt, s24, sbt * 14, s24 * 14));
     }
 
     fn sync_clock(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("Clock synchronization requires a USB wired connection.".to_string());
-            return;
-        }
-        if let Some(backend_arc) = &self.backend {
-            if let Ok(backend) = backend_arc.lock() {
-                let _ = backend.sync_clock();
-                self.status_message = Some("Synchronized onboard clock with system time".to_string());
-            }
-        }
+        self.run_device_command("Synchronized onboard clock with system time".to_string(), |b| b.sync_clock());
     }
 
     fn factory_reset(&mut self) {
-        if self.is_wireless_mode() {
-            self.error_message = Some("Factory reset requires a direct USB cable connection.".to_string());
-            return;
-        }
-        if let Some(backend_arc) = &self.backend {
-            if let Ok(backend) = backend_arc.lock() {
-                let _ = backend.factory_reset();
-                self.status_message = Some("Keyboard factory reset complete".to_string());
+        self.run_device_command("Keyboard factory reset complete".to_string(), |b| b.factory_reset());
+    }
+
+    /// Refreshes battery level and awake/asleep state from the 2.4G receiver.
+    fn poll_rf_status(&mut self) {
+        let status = match &self.backend {
+            Some(backend_arc) => match backend_arc.lock() {
+                Ok(backend) if backend.rf_relay => backend.rf_status(),
+                _ => return,
+            },
+            None => return,
+        };
+        let Ok(status) = status else { return };
+        let woke_up = status.online && !self.rf_online;
+        self.rf_online = status.online;
+        if let Some(info) = &mut self.info {
+            if status.online {
+                info.battery_percent = Some(status.battery.min(100));
             }
+        }
+        if woke_up {
+            // Settings could not be read while the keyboard slept; load them now.
+            self.init_backend();
         }
     }
 }
@@ -531,8 +540,10 @@ impl eframe::App for KeyboardApp {
                 }
             }
         }
-
-        let is_wireless = self.is_wireless_mode();
+        if self.is_wireless_mode() && self.last_rf_poll.elapsed() >= Duration::from_secs(5) {
+            self.last_rf_poll = Instant::now();
+            self.poll_rf_status();
+        }
 
         // TOP HEADER BAR (Logo replacement, Tabs, Window Controls, NO login)
         egui::TopBottomPanel::top("header_panel")
@@ -558,7 +569,7 @@ impl eframe::App for KeyboardApp {
                         (NavTab::Main, "Main"),
                         (NavTab::FnSetting, "FnSetting"),
                         (NavTab::Macro, "Macro"),
-                        (NavTab::Light, if is_wireless { "Light (USB)" } else { "Light" }),
+                        (NavTab::Light, "Light"),
                         (NavTab::Settings, "Settings"),
                         (NavTab::About, "About"),
                     ];
@@ -569,8 +580,7 @@ impl eframe::App for KeyboardApp {
                             .size(15.0)
                             .color(if is_active { Color32::WHITE } else { COLOR_TEXT_MUTED });
                         
-                        let tab_w = if tab == NavTab::Light && is_wireless { 92.0 } else { 75.0 };
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(tab_w, 32.0), egui::Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(75.0, 32.0), egui::Sense::click());
                         if resp.clicked() {
                             self.current_nav = tab;
                         }
@@ -593,7 +603,11 @@ impl eframe::App for KeyboardApp {
                         }
                         if let Some(info) = &self.info {
                             if info.is_wireless {
-                                if let Some(bat) = info.battery_percent {
+                                if !self.rf_online {
+                                    ui.label(RichText::new("💤 Asleep").color(Color32::from_rgb(255, 200, 80)).strong())
+                                        .on_hover_text("The keyboard sleeps after idling. Press any key on the MK870 to wake it.");
+                                    ui.add_space(4.0);
+                                } else if let Some(bat) = info.battery_percent {
                                     let (bat_col, bat_desc) = if bat > 70 {
                                         (Color32::from_rgb(80, 220, 120), "Good")
                                     } else if bat > 35 {
@@ -601,30 +615,16 @@ impl eframe::App for KeyboardApp {
                                     } else {
                                         (Color32::from_rgb(255, 80, 80), "Low")
                                     };
-                                    let bat_label = ui.label(RichText::new(format!("🔋 ~{}%", bat)).color(bat_col).strong());
-                                    bat_label.on_hover_text(format!(
-                                        "Battery Level: ~{}% ({})\n\nMK870 hardware reports battery in ~20% quantized intervals over 2.4GHz wireless dongle.",
-                                        bat, bat_desc
-                                    ));
+                                    let bat_label = ui.label(RichText::new(format!("🔋 {}%", bat)).color(bat_col).strong());
+                                    bat_label.on_hover_text(format!("Battery Level: {}% ({}), reported by the 2.4G receiver", bat, bat_desc));
                                     ui.add_space(4.0);
                                 }
-                                ui.label(RichText::new("● 2.4G Wireless Mode").color(COLOR_ACCENT_CYAN).strong());
-
-                                ui.add_space(6.0);
-                                let usb_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("🔌 Connect USB")
-                                            .size(11.5)
-                                            .strong()
-                                            .color(Color32::from_rgb(255, 205, 110))
-                                    )
-                                    .fill(Color32::from_rgb(42, 40, 30))
-                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 180, 50)))
-                                );
-                                if usb_btn.clicked() {
-                                    self.show_usb_settings_modal = true;
+                                if info.config_supported {
+                                    ui.label(RichText::new("● 2.4G Wireless Mode").color(COLOR_ACCENT_CYAN).strong());
+                                } else {
+                                    ui.label(RichText::new("● 2.4G Wireless (keys only)").color(COLOR_ACCENT_CYAN).strong())
+                                        .on_hover_text("This receiver forwards keystrokes but not configuration commands.\nConnect the USB cable to change lighting and other settings.");
                                 }
-                                usb_btn.on_hover_text("Currently operating in 2.4G Wireless Mode.\n\nClick to view USB feature matrix and how to flash EEPROM.");
                             } else {
                                 ui.label(RichText::new("● USB Wired Cable").color(Color32::from_rgb(100, 220, 255)).strong());
                             }
@@ -659,12 +659,8 @@ impl eframe::App for KeyboardApp {
                         ui.label(RichText::new("Configuration:").color(COLOR_TEXT_MUTED));
 
                         ui.add_space(20.0);
-                        let reset_btn = ui.add_enabled(!is_wireless, egui::Button::new("↻ Reset"));
-                        if reset_btn.clicked() {
+                        if ui.button("↻ Reset").clicked() {
                             self.factory_reset();
-                        }
-                        if is_wireless {
-                            reset_btn.on_hover_text("Factory reset requires USB cable connection");
                         }
                     });
                 });
@@ -679,14 +675,6 @@ impl eframe::App for KeyboardApp {
                         self.show_key_screen(ui);
                     }
                     NavTab::Macro => {
-                        if is_wireless {
-                            ui.horizontal(|ui| {
-                                let (circle_rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
-                                ui.painter().circle_filled(circle_rect.center(), 4.0, COLOR_ACCENT_CYAN);
-                                ui.label(RichText::new("📡 2.4G Wireless Mode: Macro recording, editing, and execution run live in software with zero latency.").color(COLOR_ACCENT_CYAN).small());
-                            });
-                            ui.add_space(6.0);
-                        }
                         render_macro_view(ui, &mut self.macro_state);
                     }
                     NavTab::Light => {
@@ -701,148 +689,11 @@ impl eframe::App for KeyboardApp {
                 }
             });
 
-        if self.show_usb_settings_modal {
-            self.show_usb_settings_modal_dialog(ctx);
-        }
     }
 }
 
 impl KeyboardApp {
-    fn show_usb_settings_modal_dialog(&mut self, ctx: &egui::Context) {
-        let mut is_open = self.show_usb_settings_modal;
-        let mut close_clicked = false;
-        egui::Window::new("🔌 Connect USB Cable for More Settings")
-            .open(&mut is_open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .min_width(540.0)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("📡 2.4G Wireless Mode vs 🔌 USB Wired Mode").strong().size(15.0).color(COLOR_ACCENT_CYAN));
-                });
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                ui.label(RichText::new("Why do some settings require a direct USB cable?").strong().color(Color32::WHITE));
-                ui.label("The FL-ESPORTS MK870 keyboard saves custom configurations directly into an onboard EEPROM flash chip. The 2.4GHz wireless receiver dongle is optimized for high-speed typing and cannot write vendor feature report packets directly to the EEPROM flash chip.");
-
-                ui.add_space(8.0);
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(26, 38, 44))
-                    .stroke(Stroke::new(1.0_f32, COLOR_ACCENT_CYAN))
-                    .rounding(4.0)
-                    .inner_margin(10.0)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("💡 Hardware Memory Persistence Guarantee:").strong().color(COLOR_ACCENT_CYAN));
-                        ui.label("Any RGB effects, custom per-key colors, polling rates, switch debounce, or sleep timeouts saved while connected via USB cable are permanently written to onboard memory.\nWhen you unplug the USB cable and return to 2.4G wireless, all your custom settings remain fully active!");
-                    });
-
-                ui.add_space(10.0);
-                ui.label(RichText::new("Feature Availability Breakdown:").strong().color(Color32::WHITE));
-                ui.add_space(4.0);
-
-                egui::Grid::new("usb_features_breakdown_grid")
-                    .striped(true)
-                    .min_col_width(140.0)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Feature").strong());
-                        ui.label(RichText::new("2.4G Wireless").strong().color(COLOR_ACCENT_CYAN));
-                        ui.label(RichText::new("USB Wired Cable").strong().color(Color32::from_rgb(100, 220, 255)));
-                        ui.end_row();
-
-                        ui.label("Typing & Latency");
-                        ui.label("✔ 1000Hz Ultra-Low Latency");
-                        ui.label("✔ 1000Hz Wired");
-                        ui.end_row();
-
-                        ui.label("Macro Recording & Playback");
-                        ui.label("✔ Fully Supported (Software Engine)");
-                        ui.label("✔ Fully Supported (Software Engine)");
-                        ui.end_row();
-
-                        ui.label("Key Remapping");
-                        ui.label("✔ Supported (Live Background Hook)");
-                        ui.label("✔ Flashed into Hardware EEPROM");
-                        ui.end_row();
-
-                        ui.label("Battery Monitoring");
-                        ui.label("✔ Coarse Interval (~20% Steps)");
-                        ui.label("⚡ Charging / Wired Mode");
-                        ui.end_row();
-
-                        ui.label("RGB Lighting Presets");
-                        ui.label("🔒 Design Only (USB Required to Flash)");
-                        ui.label("✔ Direct Flash to EEPROM");
-                        ui.end_row();
-
-                        ui.label("Custom Per-Key Illumination");
-                        ui.label("🔒 Design Only (USB Required to Flash)");
-                        ui.label("✔ Direct Flash to Layer Slots");
-                        ui.end_row();
-
-                        ui.label("Polling Rate (125-1000Hz)");
-                        ui.label("🔒 Uses Flashed Value");
-                        ui.label("✔ Configurable");
-                        ui.end_row();
-
-                        ui.label("Switch Debounce Filter");
-                        ui.label("🔒 Uses Flashed Value");
-                        ui.label("✔ Configurable (2ms - 16ms)");
-                        ui.end_row();
-
-                        ui.label("Deep Sleep Timers");
-                        ui.label("🔒 Locked to Receiver");
-                        ui.label("✔ Configurable");
-                        ui.end_row();
-                    });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("How to configure:").strong().color(Color32::WHITE));
-                        ui.label("Plug in USB cable  ➜  Flip bottom switch to USB  ➜  Auto-detected!");
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(RichText::new("✔ Got It").strong().color(COLOR_ACCENT_CYAN)).clicked() {
-                            close_clicked = true;
-                        }
-                    });
-                });
-            });
-        self.show_usb_settings_modal = is_open && !close_clicked;
-    }
-
     fn show_key_screen(&mut self, ui: &mut egui::Ui) {
-        if self.is_wireless_mode() {
-            egui::Frame::none()
-                .fill(Color32::from_rgb(26, 38, 44))
-                .stroke(Stroke::new(1.0_f32, COLOR_ACCENT_CYAN))
-                .rounding(4.0)
-                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("📡 2.4G Wireless Mode").strong().color(COLOR_ACCENT_CYAN));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(RichText::new("🔌 Connect USB Guide").small().color(Color32::from_rgb(255, 205, 110))).clicked() {
-                                    self.show_usb_settings_modal = true;
-                                }
-                            });
-                        });
-                        ui.add_space(2.0);
-                        ui.label(RichText::new("Typing, macros, and software key remapping are live and fully active. To burn bindings directly into hardware EEPROM, connect the USB cable and flip switch to USB.").color(COLOR_TEXT_ACTIVE).small());
-                    });
-                });
-            ui.add_space(6.0);
-        }
-
         // Redefined indicator line + Fn Layer notification
         ui.horizontal(|ui| {
             let (circle_rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
@@ -1459,38 +1310,13 @@ impl KeyboardApp {
                     .show(ui, |ui| {
                         ui.set_width(540.0);
                         ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Hardware Performance & Wireless Sync").strong().color(COLOR_TEXT_ACTIVE));
-                                if self.is_wireless_mode() {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.button(RichText::new("🔌 Connect USB to Unlock").small().color(Color32::from_rgb(255, 205, 110))).clicked() {
-                                            self.show_usb_settings_modal = true;
-                                        }
-                                    });
-                                }
-                            });
-
-                            if self.is_wireless_mode() {
-                                ui.add_space(8.0);
-                                egui::Frame::none()
-                                    .fill(Color32::from_rgb(38, 30, 20))
-                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 180, 50)))
-                                    .rounding(4.0)
-                                    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-                                    .show(ui, |ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(RichText::new("🔒 Hardware Settings Locked in 2.4G Mode").strong().color(Color32::from_rgb(255, 200, 100)).small());
-                                            ui.add_space(3.0);
-                                            ui.label(RichText::new("Polling rate, switch debounce filter, and deep sleep timeouts are saved directly into the keyboard's internal EEPROM chip. Connect the USB cable and flip the switch to USB to configure these options. Settings saved over USB remain active when returning to 2.4G wireless!").color(COLOR_TEXT_ACTIVE).small());
-                                        });
-                                    });
-                            }
+                            ui.label(RichText::new("Hardware Performance & Wireless Sync").strong().color(COLOR_TEXT_ACTIVE));
 
                             ui.add_space(10.0);
 
-                            ui.add_enabled_ui(!self.is_wireless_mode(), |ui| {
+                            ui.scope(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label("USB Polling Rate: ");
+                                    ui.label("Polling Rate: ");
                                     let rates = [
                                         (PollingRate::Hz1000, "1000 Hz"),
                                         (PollingRate::Hz500, "500 Hz"),
@@ -1519,7 +1345,7 @@ impl KeyboardApp {
                                 ui.add_space(8.0);
                                 ui.horizontal(|ui| {
                                     ui.label("2.4G Sleep Timeout: ");
-                                    if ui.add(egui::Slider::new(&mut self.sleep_24_min, 1..=30).suffix(" min")).changed() {
+                                    if slider_committed(&ui.add(egui::Slider::new(&mut self.sleep_24_min, 1..=30).suffix(" min"))) {
                                         self.apply_sleep();
                                     }
                                 });
@@ -1544,29 +1370,6 @@ impl KeyboardApp {
 
 
     fn show_light_screen(&mut self, ui: &mut egui::Ui) {
-        if self.is_wireless_mode() {
-            egui::Frame::none()
-                .fill(Color32::from_rgb(38, 30, 20))
-                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 180, 50)))
-                .rounding(6.0)
-                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("🔌 Connect USB Cable to Flash Lighting").strong().color(Color32::from_rgb(255, 200, 100)));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(RichText::new("🔌 Connect USB Guide").small().color(Color32::from_rgb(255, 205, 110))).clicked() {
-                                    self.show_usb_settings_modal = true;
-                                }
-                            });
-                        });
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("The MK870 hardware requires a direct USB wired connection to program RGB presets and per-key illumination into onboard memory.\n🎨 Design Mode Active: You can preview presets and paint custom per-key layouts anytime. Connect USB cable and flip switch to USB to flash them — settings persist automatically in 2.4G mode!").color(COLOR_TEXT_ACTIVE).small());
-                    });
-                });
-            ui.add_space(8.0);
-        }
-
         // Sub-tabs: Light | Light Edit | My Work (matching Screenshot 3)
         ui.horizontal(|ui| {
             let (rect1, resp1) = ui.allocate_exact_size(Vec2::new(70.0, 24.0), egui::Sense::click());
@@ -1697,16 +1500,14 @@ impl KeyboardApp {
                             ui.add_space(12.0);
 
                             // THE PRIMARY SAVE BUTTON
-                            let is_wireless = self.is_wireless_mode();
                             let apply_btn = ui.add(
                                 egui::Button::new(
-                                    RichText::new(if is_wireless { "🔌 Connect USB to Upload Lights" } else { "💡 Apply Custom Lights to Keyboard" })
+                                    RichText::new("💡 Apply Custom Lights to Keyboard")
                                         .strong()
                                         .size(13.0)
-                                        .color(if is_wireless { Color32::from_rgb(255, 205, 110) } else { Color32::WHITE })
+                                        .color(Color32::WHITE)
                                 )
-                                .fill(if is_wireless { Color32::from_rgb(42, 40, 30) } else { Color32::from_rgb(0, 160, 140) })
-                                .stroke(if is_wireless { Stroke::new(1.0_f32, Color32::from_rgb(255, 180, 50)) } else { Stroke::NONE })
+                                .fill(Color32::from_rgb(0, 160, 140))
                                 .min_size(Vec2::new(210.0, 36.0))
                             );
                             if apply_btn.clicked() {
@@ -1718,13 +1519,9 @@ impl KeyboardApp {
                                     _ => {}
                                 }
                                 crate::storage::save_light_layers(&self.light_layers);
-                                if is_wireless {
-                                    self.error_message = Some("Per-key lights saved locally! Connect USB cable and flip switch to USB to flash to keyboard hardware.".to_string());
-                                } else {
-                                    self.apply_per_key_rgb();
-                                }
+                                self.apply_per_key_rgb();
                             }
-                            apply_btn.on_hover_text(if is_wireless { "Connect USB cable to flash custom lights to keyboard memory" } else { "Flashes your 87 per-key colors to the keyboard and activates custom illumination!" });
+                            apply_btn.on_hover_text("Flashes your 87 per-key colors to the keyboard and activates custom illumination!");
 
                             ui.add_space(14.0);
                             ui.separator();
@@ -1834,13 +1631,13 @@ impl KeyboardApp {
                             ui.add_space(4.0);
 
                             ui.label(format!("Brightness: {} / 4", self.brightness));
-                            if ui.add(egui::Slider::new(&mut self.brightness, 0..=4)).changed() {
+                            if slider_committed(&ui.add(egui::Slider::new(&mut self.brightness, 0..=4))) {
                                 self.apply_rgb();
                             }
 
                             ui.add_space(8.0);
                             ui.label(format!("Animation Speed: {} / 4", self.speed));
-                            if ui.add(egui::Slider::new(&mut self.speed, 0..=4)).changed() {
+                            if slider_committed(&ui.add(egui::Slider::new(&mut self.speed, 0..=4))) {
                                 self.apply_rgb();
                             }
 
@@ -1850,23 +1647,13 @@ impl KeyboardApp {
                             }
 
                             ui.add_space(14.0);
-                            let is_wireless = self.is_wireless_mode();
                             ui.horizontal(|ui| {
-                                if is_wireless {
-                                    if ui.button(RichText::new("🔌 Connect USB to Apply Lighting").color(Color32::from_rgb(255, 205, 110)).strong()).clicked() {
-                                        self.error_message = Some("Cannot flash RGB over 2.4G wireless dongle. Connect USB cable and flip switch to USB to apply lighting.".to_string());
-                                    }
-                                    if ui.button(RichText::new("🔌 Connect USB to Turn Off LEDs").color(COLOR_TEXT_MUTED)).clicked() {
-                                        self.error_message = Some("Cannot flash RGB over 2.4G wireless dongle. Connect USB cable and flip switch to USB to turn off LEDs.".to_string());
-                                    }
-                                } else {
-                                    if ui.button(RichText::new("⚡ Apply Preset").color(COLOR_ACCENT_CYAN).strong()).clicked() {
-                                        self.apply_rgb();
-                                    }
-                                    if ui.button("🌙 Turn Off LEDs").clicked() {
-                                        self.selected_mode = LightMode::Off;
-                                        self.apply_rgb();
-                                    }
+                                if ui.button(RichText::new("⚡ Apply Preset").color(COLOR_ACCENT_CYAN).strong()).clicked() {
+                                    self.apply_rgb();
+                                }
+                                if ui.button("🌙 Turn Off LEDs").clicked() {
+                                    self.selected_mode = LightMode::Off;
+                                    self.apply_rgb();
                                 }
                             });
                         });
@@ -2000,24 +1787,26 @@ impl KeyboardApp {
                             let mut r = self.active_paint_color[0];
                             let mut g = self.active_paint_color[1];
                             let mut b = self.active_paint_color[2];
-                            let mut slider_changed = false;
+                            let mut slider_commit = false;
 
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("R").color(Color32::from_rgb(255, 100, 100)).strong());
-                                if ui.add(egui::Slider::new(&mut r, 0..=255)).changed() { slider_changed = true; }
+                                slider_commit |= slider_committed(&ui.add(egui::Slider::new(&mut r, 0..=255)));
                             });
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("G").color(Color32::from_rgb(100, 255, 100)).strong());
-                                if ui.add(egui::Slider::new(&mut g, 0..=255)).changed() { slider_changed = true; }
+                                slider_commit |= slider_committed(&ui.add(egui::Slider::new(&mut g, 0..=255)));
                             });
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("B").color(Color32::from_rgb(100, 150, 255)).strong());
-                                if ui.add(egui::Slider::new(&mut b, 0..=255)).changed() { slider_changed = true; }
+                                slider_commit |= slider_committed(&ui.add(egui::Slider::new(&mut b, 0..=255)));
                             });
 
-                            if slider_changed {
+                            if [r, g, b] != self.active_paint_color {
                                 self.active_paint_color = [r, g, b];
                                 self.rainbow = false;
+                            }
+                            if slider_commit {
                                 self.apply_rgb();
                             }
 
@@ -2056,7 +1845,7 @@ impl KeyboardApp {
                             ui.label(format!("Hardware PID:   0x{:04X}", info.pid));
                             ui.label(format!("Connection:     {}", if info.is_wireless { "2.4 GHz Wireless Dongle" } else { "USB Cable (Wired Mode)" }));
                             if let Some(bat) = info.battery_percent {
-                                ui.label(format!("Battery Level:  ~{}% (approx. 20% intervals)", bat));
+                                ui.label(format!("Battery Level:  {}%", bat));
                             }
                             ui.label(format!("Firmware Date:  {}", info.firmware_date));
                         } else {
@@ -2084,16 +1873,9 @@ impl KeyboardApp {
                         ui.separator();
                         ui.add_space(10.0);
 
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Hardware Modes:").strong().color(Color32::WHITE));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(RichText::new("🔌 View USB Feature Matrix").small().color(Color32::from_rgb(255, 205, 110))).clicked() {
-                                    self.show_usb_settings_modal = true;
-                                }
-                            });
-                        });
+                        ui.label(RichText::new("Hardware Modes:").strong().color(Color32::WHITE));
                         ui.add_space(4.0);
-                        ui.label(RichText::new("2.4G Mode: Typing, macros, and software key remapping run live with zero latency.\nUSB Mode: Direct hardware EEPROM flashing for RGB lighting, debounce, and polling rate.").small().color(COLOR_TEXT_MUTED));
+                        ui.label(RichText::new("2.4G and USB modes both support lighting, polling rate, debounce, and sleep settings.\nOver 2.4G the keyboard must be awake: press any key if it has gone to sleep.").small().color(COLOR_TEXT_MUTED));
                     });
             });
 
